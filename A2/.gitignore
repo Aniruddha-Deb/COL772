@@ -1,0 +1,3 @@
+*.bin
+*.vec
+__pycache__

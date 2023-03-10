@@ -3,18 +3,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 
-# rough sketch:
-# Transformer
-# - Embeddings
-# - Position Embeddings
-# -* EncoderLayer
-#   -* MultiHeadAttention
-#     -* SingleHeadAttention
-#   -* Linear
-
 class SingleHeadAttention(nn.Module):
 
     def __init__(self, embed_dim=512, att_dim=64, p=0.2):
+        super().__init__()
         self.W_k = nn.Linear(embed_dim, att_dim)
         self.W_q = nn.Linear(embed_dim, att_dim)
         self.W_v = nn.Linear(embed_dim, att_dim)
@@ -25,44 +17,50 @@ class SingleHeadAttention(nn.Module):
         K = self.W_k(X)
         Q = self.W_q(X)
         V = self.W_v(X)
-        return self.dropout(F.softmax(Q@K.T/self.d, dim=-1)@V)
+        kv = torch.bmm(Q,K.transpose(1,2))
+        f = torch.bmm(F.softmax(kv/self.d, dim=-1), V)
+        return self.dropout(f)
 
 class MultiHeadAttention(nn.Module):
 
     def __init__(self, n_heads=8, embed_dim=512, att_dim=64):
-        self.heads = [SingleHeadAttention(embed_dim=embed_dim, att_dim=att_dim) for i in range(n_heads)]
+        super().__init__()
+        self.heads = nn.ModuleList([SingleHeadAttention(embed_dim=embed_dim, att_dim=att_dim) for _ in range(n_heads)])
         self.linear = nn.Linear(att_dim*n_heads, embed_dim)
 
     def forward(self, X):
-        att_concat = torch.hstack([att(X) for att in self.heads])
+        att_concat = torch.cat([att(X) for att in self.heads], dim=2)
         return self.linear(att_concat)
 
 class Sublayer(nn.Module):
 
-    def __init__(self, module, size, p=0.2):
+    def __init__(self, module, layer_size=512, p=0.2):
+        super().__init__()
         self.module = module
         self.dropout = nn.Dropout(p)
-        self.norm = nn.LayerNorm(size)
+        self.norm = nn.LayerNorm([layer_size])
 
     def forward(self, x):
         return self.norm(x+self.dropout(self.module(x)))
 
-class FeedForwardNN(nn.module):
+class FeedForwardNN(nn.Module):
 
     def __init__(self, hidden_dim=2048, embed_dim=512, p=0.2):
+        super().__init__()
         self.W1 = nn.Linear(embed_dim, hidden_dim)
         self.d  = nn.Dropout(p)
         self.W2 = nn.Linear(hidden_dim, embed_dim)
     
     def forward(self, x):
-        return self.W2(self.d(self.W1(x)))
+        return self.W2(self.d(self.W1(x).relu()))
 
 class EncoderLayer(nn.Module):
 
-    def __init__(self, n_heads=8, embed_dim=512, att_dim=64):
+    def __init__(self, n_heads=8, hidden_dim=2048, embed_dim=512, att_dim=64):
+        super().__init__()
         # TODO pass size
-        self.attn = Sublayer(MultiHeadAttention(), size)
-        self.ff = Sublayer(FeedForwardNN(), size)
+        self.attn = Sublayer(MultiHeadAttention(n_heads=n_heads, embed_dim=embed_dim, att_dim=att_dim))
+        self.ff = Sublayer(FeedForwardNN(hidden_dim=hidden_dim, embed_dim=embed_dim))
 
     def forward(self, x):
         return self.ff(self.attn(x))
@@ -70,7 +68,8 @@ class EncoderLayer(nn.Module):
 class Encoder(nn.Module):
 
     def __init__(self, n_layers=8):
-        self.layers = [EncoderLayer() for i in range(n_layers)]
+        super().__init__()
+        self.layers = nn.ModuleList([EncoderLayer() for _ in range(n_layers)])
 
     def forward(self, x):
         for layer in self.layers:
@@ -80,20 +79,19 @@ class Encoder(nn.Module):
 class PositionalEmbedding(nn.Module):
 
     def __init__(self, dim=512, max_len=5000, p=0.2):
-
+        super().__init__()
         # Compute the positional encodings once in log space.
-        pe = torch.zeros(max_len, dim)
+        self.pe = torch.zeros(max_len, dim)
         position = torch.arange(0, max_len).unsqueeze(1)
         div_term = torch.exp(
-            torch.arange(0, d_model, 2) * -(math.log(10000.0) / d_model)
+            torch.arange(0, dim, 2) * -(np.log(10000.0) / dim)
         )
-        pe[:, 0::2] = torch.sin(position * div_term)
-        pe[:, 1::2] = torch.cos(position * div_term)
-        pe = pe.unsqueeze(0)
-        self.register_buffer("pe", pe)
+        self.pe[:, 0::2] = torch.sin(position * div_term)
+        self.pe[:, 1::2] = torch.cos(position * div_term)
+        self.pe = self.pe.unsqueeze(0)
+        # self.register_buffer("pe", self.pe)
 
         self.dropout = nn.Dropout(p)
 
     def forward(self, x):
         return self.dropout(x+self.pe[:,:x.shape[1]].requires_grad_(False))
-
