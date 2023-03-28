@@ -13,16 +13,11 @@ from torchtext.vocab import GloVe
 from torch.nn.utils.rnn import pad_sequence
 import numpy as np
 
-input_dir = '/kaggle/input'
-data_path = f'{input_dir}/col772-a2-data'
-
 device = torch.device('cpu')
 if torch.cuda.is_available():
     device = torch.device('cuda')
 # if torch.backends.mps.is_available():
 #     device = torch.device('mps')
-
-print(device)
 
 class BioNERDataset(Dataset):
     
@@ -343,8 +338,9 @@ if __name__ == "__main__":
         val_file_path = sys.argv[3]
         train_ds = BioNERDataset([train_file_path, val_file_path], label2id)
         print(train_ds.weights)
+        print(len(train_ds.sentences))
 
-        train_dl = DataLoader(train_ds, batch_size=16, collate_fn=dl_collate_fn, num_workers=8, shuffle=True)
+        train_dl = DataLoader(train_ds, batch_size=16, collate_fn=dl_collate_fn, num_workers=2, shuffle=True)
 
         model = BiLSTMNERTagger(num_layers=2).to(device)
 

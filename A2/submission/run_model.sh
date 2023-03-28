@@ -1,1 +1,1 @@
-python3 main.py $1 $2 $3
+python3 main_merge.py $1 $2 $3

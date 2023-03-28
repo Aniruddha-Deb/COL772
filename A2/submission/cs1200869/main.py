@@ -11,12 +11,7 @@ import sys
 from torchtext.vocab import GloVe
 
 from torch.nn.utils.rnn import pad_sequence
-import copy
 import numpy as np
-from sklearn.metrics import f1_score
-
-input_dir = '/kaggle/input'
-data_path = f'{input_dir}/col772-a2-data'
 
 device = torch.device('cpu')
 if torch.cuda.is_available():
@@ -24,28 +19,29 @@ if torch.cuda.is_available():
 # if torch.backends.mps.is_available():
 #     device = torch.device('mps')
 
-print(device)
-
 class BioNERDataset(Dataset):
     
-    def __init__(self, filename, label2id):
+    def __init__(self, filenames, label2id):
         
         self.sentences = []
         self.token_counts = 0
         self.class_counts = torch.zeros(len(label2id))
-        with open(filename, 'r') as f:
-            sentence = []
-            for l in f:
-                if l == '\n':
-                    self.sentences.append(list(zip(*sentence)))
-                    sentence = []
-                else:
-                    token, cls = l.strip().split('\t')
-                    sentence.append((token, label2id[cls]))
-                    self.class_counts[label2id[cls]] += 1
-                    self.token_counts += 1
+        for filename in filenames:
+            with open(filename, 'r') as f:
+                sentence = []
+                for l in f:
+                    if l == '\n':
+                        self.sentences.append(list(zip(*sentence)))
+                        sentence = []
+                    else:
+                        token, cls = l.strip().split('\t')
+                        sentence.append((token, label2id[cls]))
+                        self.class_counts[label2id[cls]] += 1
+                        self.token_counts += 1
+            
+            if sentence:
+                self.sentences.append(list(zip(*sentence)))
         
-        self.sentences.append(list(zip(*sentence)))
         self.weights = self.token_counts / (self.class_counts*len(label2id))
         
     def __len__(self):
@@ -340,11 +336,11 @@ if __name__ == "__main__":
 
         train_file_path = sys.argv[2]
         val_file_path = sys.argv[3]
-        train_ds = BioNERDataset(train_file_path, label2id)
-        val_ds = BioNERDataset(val_file_path, label2id)
+        train_ds = BioNERDataset([train_file_path, val_file_path], label2id)
+        print(train_ds.weights)
+        print(len(train_ds.sentences))
 
-        train_dl = DataLoader(train_ds, batch_size=16, collate_fn=dl_collate_fn, num_workers=8, shuffle=True)
-        val_dl = DataLoader(val_ds, batch_size=16, collate_fn=dl_collate_fn, num_workers=8, shuffle=False)
+        train_dl = DataLoader(train_ds, batch_size=16, collate_fn=dl_collate_fn, num_workers=2, shuffle=True)
 
         model = BiLSTMNERTagger(num_layers=2).to(device)
 
@@ -353,16 +349,6 @@ if __name__ == "__main__":
         optimizer = optim.Adam(list(model.parameters())+list(emb_model.parameters()), lr=1e-3)
         scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
         loss_fn = nn.CrossEntropyLoss(weight=train_ds.weights.to(device))
-
-        best_model = None
-        best_emb_model = None
-        f1_means = []
-        best_val_loss = 10000
-        best_f1_mean = 0
-        val_losses = []
-        train_losses = []
-        possible_labels = range(1,13)
-        patience = 0
 
         for epoch in range(30):
 
@@ -388,63 +374,9 @@ if __name__ == "__main__":
             train_loss = train_loss.cpu()
             train_loss /= len(train_dl)
             print(f' Train Loss: {train_loss}')
-            train_losses.append(train_loss)
 
-            val_loss = torch.tensor(0, dtype=torch.float, device=device)
-            true_labels = []
-            pred_labels = []
-            model.eval()
-            emb_model.eval()
-            for (sentences, answers) in tqdm(val_dl):
-                tokens, labels, mask = preprocess_batch(emb_model, sentences, labels=answers)
-                tokens = tokens.to(device)
-                labels = labels.to(device).flatten()
-                mask = mask.to(device).flatten()
-
-                logits = model(tokens).flatten(end_dim=1)
-                loss = loss_fn(logits, labels)
-
-                val_loss += loss.detach()
-                
-                pred_labels.append(torch.argmax(logits, axis=1)[mask])
-                true_labels.append(labels[mask])
-            
-            val_loss = val_loss.cpu()
-            val_loss /= len(val_dl)
-            val_losses.append(val_loss)
-            
-            pred_labels = np.array(torch.hstack(pred_labels).cpu())
-            true_labels = np.array(torch.hstack(true_labels).cpu())
-
-            f1_micro = f1_score(true_labels, pred_labels, average="micro", labels=possible_labels)
-            f1_macro = f1_score(true_labels, pred_labels, average="macro", labels=possible_labels)
-
-            f1_mean = (f1_macro + f1_micro)/2
-            f1_means.append(f1_mean)
-
-            print(f' Val Loss: {val_loss}')
-            print(f' F1 micro: {f1_micro}')
-            print(f' F1 macro: {f1_macro}')
-            print(f' F1 mean: {f1_mean}')
-            print('')
-            
-            # early stopping
-            if f1_mean <= best_f1_mean:
-                if patience >= 4:
-                    break
-                else:
-                    patience += 1
-            else:
-                patience = 0
-                best_val_loss = val_loss
-                best_f1_mean = f1_mean
-                best_model = copy.deepcopy(model)
-                best_emb_model = copy.deepcopy(emb_model)
-
-        print(f'Best F1 mean: {best_f1_mean}')
-
-        torch.save(best_model, 'cs1200869_model.pt')
-        torch.save(best_emb_model, 'cs1200869_emb_model.pt')
+        torch.save(model, 'cs1200869_model.pt')
+        torch.save(emb_model, 'cs1200869_emb_model.pt')
 
     elif sys.argv[1] == 'test':
         test_file_path = sys.argv[2]
